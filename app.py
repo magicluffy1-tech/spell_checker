@@ -1,47 +1,94 @@
-import streamlit as st
+"""
+app.py
+생기부 맞춤법 검사기 - Streamlit 메인 앱
+- Selenium / gspread 직접 쓰기 UI 완전 제거
+- 순수 requests REST API 기반 초고속 맞춤법 검사
+- 입력: 엑셀/CSV 업로드 OR 구글 시트 공유 링크(읽기 전용)
+- 출력: 교정 결과 테이블 + 엑셀/CSV 다운로드
+- Premium Glassmorphism Dark Theme & Micro-animations 적용
+"""
+
 import time
 import random
-import pandas as pd
-from spell_checker import check_spelling
-from sheets_handler import get_raw_data_from_dataframe, get_raw_data_from_public_url
-import io
 
-# 스트림릿 페이지 설정 (Premium Theme 및 반응형 레이아웃)
+import pandas as pd
+import streamlit as st
+
+from spell_checker import check_spelling
+from sheets_handler import (
+    df_to_csv_bytes,
+    df_to_excel_bytes,
+    get_raw_data_from_dataframe,
+    get_raw_data_from_public_url,
+    load_uploaded_file,
+)
+
+# ──────────────────────────────────────────────
+# 페이지 설정 (Premium Theme & Responsive Layout)
+# ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="Premium 맞춤법 검사기 & 구글 시트 연동기",
-    page_icon="✨",
+    page_title="Premium 생기부 맞춤법 검사기",
+    page_icon="✏️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS로 고급스러운 다크 & 글래스모피즘 웹 테마와 화려한 디자인 구현
+# ──────────────────────────────────────────────
+# 커스텀 Premium CSS 디자인 스타일링
+# ──────────────────────────────────────────────
 st.markdown("""
     <style>
-        /* 메인 디자인 및 배경색 설정 */
+        /* 메인 다크 웹 테마 및 폰트 */
         .main {
-            background-color: #0f111a;
-            color: #e2e8f0;
-            font-family: 'Outfit', 'Inter', sans-serif;
+            background-color: #0d0e15;
+            color: #f1f5f9;
+            font-family: 'Outfit', 'Inter', 'Noto Sans KR', sans-serif;
         }
-        /* 카드 및 컨테이너 스타일 */
-        .css-1r6g72h, .stApp {
-            background-color: #0f111a;
+        .stApp {
+            background-color: #0d0e15;
         }
+        
+        /* Glassmorphism 카드 컨테이너 */
         div[data-testid="stVerticalBlock"] > div:has(div.element-container) {
             background: rgba(255, 255, 255, 0.02);
-            border-radius: 12px;
-            padding: 15px;
-            margin-bottom: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        /* 프리미엄 헤더 */
-        .title-container {
-            background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
             border-radius: 16px;
-            padding: 30px 40px;
-            margin-bottom: 25px;
-            box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.3);
-            text-align: left;
+            padding: 24px;
+            margin-bottom: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        div[data-testid="stVerticalBlock"] > div:has(div.element-container):hover {
+            border-color: rgba(99, 102, 241, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(99, 102, 241, 0.05);
+            transform: translateY(-2px);
+        }
+        
+        /* 프리미엄 그라데이션 헤더 배너 */
+        .title-container {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #c084fc 100%);
+            border-radius: 20px;
+            padding: 40px;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 40px -15px rgba(79, 70, 229, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+        .title-container::before {
+            content: "";
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 60%);
+            animation: rotate 20s linear infinite;
+        }
+        @keyframes rotate {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         .title-text {
             color: #ffffff;
@@ -49,347 +96,377 @@ st.markdown("""
             font-weight: 800;
             margin: 0;
             letter-spacing: -0.03em;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            position: relative;
+            z-index: 1;
         }
         .subtitle-text {
-            color: rgba(255, 255, 255, 0.85);
-            font-size: 1.1rem;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 1.15rem;
             font-weight: 400;
-            margin-top: 10px;
+            margin-top: 12px;
+            position: relative;
+            z-index: 1;
+            letter-spacing: -0.01em;
         }
-        /* 메트릭 및 컴포넌트 커스텀 */
+        
+        /* 메트릭 카드 시각화 */
         .metric-card {
             background: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
-            padding: 20px;
+            border-radius: 16px;
+            padding: 24px;
             text-align: center;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+            transition: all 0.3s ease;
         }
-        .metric-title {
-            font-size: 0.9rem;
-            color: #94a3b8;
-            margin-bottom: 5px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+        .metric-card:hover {
+            border-color: rgba(56, 189, 248, 0.3);
+            transform: translateY(-3px);
         }
-        .metric-value {
-            font-size: 2.2rem;
-            font-weight: 700;
-            color: #38bdf8;
-        }
-        /* 성공/에러 상태 배지 */
-        .badge-demo {
-            background-color: #f59e0b;
-            color: #ffffff;
-            padding: 3px 8px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            font-weight: bold;
-        }
+        
+        /* 프리미엄 배지 스타일 */
         .badge-live {
-            background-color: #10b981;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: #ffffff;
-            padding: 3px 8px;
-            border-radius: 6px;
+            padding: 4px 10px;
+            border-radius: 8px;
             font-size: 0.85rem;
-            font-weight: bold;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            display: inline-block;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+        }
+        
+        /* 버튼 & 슬라이더 모던화 */
+        .stButton>button {
+            border-radius: 12px !important;
+            padding: 12px 24px !important;
+            font-weight: 600 !important;
+            transition: all 0.2s ease !important;
+        }
+        .stButton>button:hover {
+            transform: scale(1.01);
+            box-shadow: 0 8px 20px rgba(79, 70, 229, 0.2) !important;
         }
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 헤더 영역 -----------------
+# ──────────────────────────────────────────────
+# 사이드바: 설정 및 제어판
+# ──────────────────────────────────────────────
+with st.sidebar:
+    st.markdown('<span class="badge-live">SYSTEM CONTROL</span>', unsafe_allow_html=True)
+    st.title("⚙️ 설정 및 옵션")
+    
+    st.subheader("📂 데이터 입력 방식")
+    input_mode = st.radio(
+        "입력 방식 선택",
+        options=["파일 업로드 (엑셀/CSV)", "구글 시트 공유 링크"],
+        index=0,
+        help="엑셀(.xlsx), CSV 파일 업로드 또는 '링크가 있는 모든 사용자' 권한의 구글 시트 URL 사용",
+    )
+
+    st.divider()
+
+    st.subheader("🔧 검사 옵션")
+    delay_sec = st.slider(
+        "청크 간 대기 시간 (초)",
+        min_value=0.1,
+        max_value=2.0,
+        value=0.3,
+        step=0.1,
+        help="REST API 방식으로 서버 차단 위험이 매우 낮습니다. 0.3초 권장.",
+    )
+    chunk_delay_every = st.slider(
+        "N줄마다 추가 휴식",
+        min_value=5,
+        max_value=50,
+        value=20,
+        step=5,
+        help="지정한 줄 수마다 3초 추가 휴식. 대량 처리 시 서버 부하 방지용.",
+    )
+    use_old_api = st.toggle(
+        "구버전 API 사용 (안정적)",
+        value=True,
+        help="old_speller 엔드포인트 사용. 차단 없이 가장 안정적으로 작동합니다.",
+    )
+
+    st.divider()
+    st.caption(
+        "ℹ️ 본 앱은 가상 브라우저 없이 나라인포테크 REST API 백엔드를 최적화 우회 호출하여 "
+        "서버 리소스를 보호하며 광속으로 처리를 수행합니다."
+    )
+
+
+# ──────────────────────────────────────────────
+# 메인 프리미엄 헤더 배너
+# ──────────────────────────────────────────────
 st.markdown("""
     <div class="title-container">
-        <h1 class="title-text">✨ Premium 맞춤법 검사 & 구글 시트 연동기</h1>
-        <p class="subtitle-text">구글 시트의 원문 데이터를 로드하여 나라인포테크 맞춤법 검사기 서버(장애 시 3회 자동 재시도)를 통해 교정하고 결과를 즉각 실시간 업데이트합니다.</p>
+        <h1 class="title-text">✏️ 생기부 맞춤법 검사기</h1>
+        <p class="subtitle-text">초고속 비-브라우저 REST API 우회 기술 탑재 · 500자 단위 자동 문장 분할 매직 및 실시간 결과 대시보드</p>
     </div>
 """, unsafe_allow_html=True)
 
-# ----------------- 사이드바 (설정 영역) -----------------
-st.sidebar.markdown("## ⚙️ 시스템 설정 및 지연 시간")
-st.sidebar.caption("나라인포테크 서버를 보호하고 안전한 우회를 유지하기 위한 미세 지연 시간 제어 장치입니다.")
+# ── 세션 상태 초기화 ───────────────────────────
+for key, default in {
+    "df_original": None,
+    "df_result": None,
+    "text_column": None,
+    "processing": False,
+    "done": False,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-delay_normal_min = st.sidebar.slider("일반 행 최소 대기 (초)", 0.1, 2.0, 0.3, 0.1)
-delay_normal_max = st.sidebar.slider("일반 행 최대 대기 (초)", 0.2, 4.0, 0.8, 0.1)
-delay_long_min = st.sidebar.slider("10번째 행 최소 대기 (초)", 1.0, 10.0, 2.0, 0.5)
-delay_long_max = st.sidebar.slider("10번째 행 최대 대기 (초)", 1.5, 15.0, 4.0, 0.5)
 
-# ----------------- 메인 제어 및 입력 폼 -----------------
-col_input, col_info = st.columns([2, 1])
+# ──────────────────────────────────────────────
+# 1단계: 데이터 로드
+# ──────────────────────────────────────────────
+st.header("1️⃣ 데이터 불러오기")
 
-with col_input:
-    st.markdown("### 📝 연동 데이터 입력")
-    data_source = st.radio("데이터 소스 선택", ["엑셀/CSV 파일 업로드", "구글 시트 (공유 링크 뷰어)"], horizontal=True)
-    
-    uploaded_file = None
-    sheet_url_input = ""
-    
-    if data_source == "엑셀/CSV 파일 업로드":
-        uploaded_file = st.file_uploader("검사할 파일을 업로드하세요 (.xlsx, .csv)", type=["xlsx", "csv"])
-    else:
-        sheet_url_input = st.text_input(
-            "구글 스프레드시트 공유 URL",
-            value="",
-            placeholder="https://docs.google.com/spreadsheets/d/.../edit?usp=sharing",
-            help="구글 시트의 우측 상단 [공유] -> [링크가 있는 모든 사용자]에게 '뷰어' 권한을 주신 후, 해당 주소를 복사해 붙여넣으세요. 데모 테스트 시 'demo'라고 입력하시면 가상 데이터를 보여줍니다."
+df_loaded: pd.DataFrame | None = None
+load_error: str = ""
+
+col_load_1, col_load_2 = st.columns([2, 1])
+
+with col_load_1:
+    if input_mode == "파일 업로드 (엑셀/CSV)":
+        uploaded = st.file_uploader(
+            "엑셀(.xlsx) 또는 CSV 파일 업로드",
+            type=["xlsx", "xls", "csv"],
+            help="첫 번째 행이 헤더(열 이름)여야 합니다.",
         )
-    
-    col_sheet_name, col_options = st.columns(2)
-    with col_sheet_name:
-        sheet_name_input = st.text_input(
-            "워크시트 이름 (선택)",
-            value="정리완료_결과",
-            placeholder="예: 정리완료_결과 (비워두면 첫 번째 시트)",
-            help="맞춤법 검사 대상 시트 탭의 이름을 지정하세요. 사용자의 시트 탭 이름인 '정리완료_결과'가 기본 세팅되어 있습니다."
+        if uploaded:
+            try:
+                df_loaded, _ = load_uploaded_file(uploaded)
+                st.success(f"✅ 파일 로드 완료: {len(df_loaded)}행 × {len(df_loaded.columns)}열")
+            except Exception as e:
+                load_error = str(e)
+    else:  # 구글 시트 공유 링크
+        sheet_url = st.text_input(
+            "구글 시트 공유 링크 입력",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            help="파일 → 공유 → '링크가 있는 모든 사용자' 뷰어 권한으로 설정 후 링크 복사",
         )
-    with col_options:
-        skip_existing = st.checkbox(
-            "이미 교정본이 있는 행은 제외하고 검사",
-            value=True,
-            help="이미 가공이 완료된 행을 건너뛰어 서버 리소스와 처리 속도를 획기적으로 절약합니다."
-        )
+        if sheet_url:
+            with st.spinner("구글 시트 로드 중..."):
+                try:
+                    df_loaded, _ = get_raw_data_from_public_url(sheet_url)
+                    st.success(f"✅ 구글 시트 로드 완료: {len(df_loaded)}행 × {len(df_loaded.columns)}열")
+                except PermissionError as e:
+                    load_error = f"🔒 접근 권한 오류: {e}"
+                except Exception as e:
+                    load_error = str(e)
 
-with col_info:
-    st.markdown("### 💡 검사기 사용 안내")
-    if sheet_name_input.strip() == "창체_결과":
+with col_load_2:
+    st.markdown("### 💡 연동 꿀팁")
+    st.info(
+        "임의의 행이나 열도 완벽히 지원합니다. "
+        "파일 또는 구글 시트의 헤더를 감지하여 원하는 텍스트 컬럼을 자유롭게 타겟 지정할 수 있습니다."
+    )
+
+if load_error:
+    st.error(f"❌ {load_error}")
+    with st.expander("🛠️ 공유 링크 연동 실패 해결법", expanded=True):
         st.markdown("""
-        - **기본 정보 (A, B, C, D열):** 학생 신상정보 등은 데이터 손실 없이 **그대로 보존**되어 원본 유지됩니다.
-        - **원문 (E열 - 창체_결과 원문):** 맞춤법을 검사할 원래 한글 텍스트입니다.
-        - **교정본 (F열 - 교정_결과):** 맞춤법 교정이 완료되면 실시간으로 우측 F열에 기록됩니다.
-        - **수정 사유 (G열 - 교정_수정사유):** 어떠한 오류 단어들이 왜 무엇으로 고쳐졌는지에 대한 사유가 G열에 일목요연하게 정리됩니다.
-        - **실시간 추적:** 아래 대시보드에서 실시간으로 성공 여부와 교정 전/후 데이터 및 사유 비교 표가 즉시 업데이트됩니다.
+        1. **구글 시트 공유 범위가 올바른가요?**
+           - 구글 시트 우측 상단 **[공유]** -> 일반 액세스가 **'링크가 있는 모든 사용자'**로 되어 있으며 권한이 **'뷰어'**인지 꼭 확인하세요.
+        2. **올바른 URL 형식인가요?**
+           - 주소창 전체 주소를 누락 없이 붙여넣으셨는지 점검하세요.
         """)
-    else:
-        st.markdown("""
-        - **번호, 성명, 학년 (A, B, C열):** 학생 신상정보는 데이터 손실 없이 **그대로 보존**되어 원본 유지됩니다.
-        - **원문 (D열 - 행동특성 및 종합의견):** 맞춤법을 검사할 원래 한글 종합의견 텍스트입니다.
-        - **교정본 (E열 - 교정_행동특성 및 종합의견):** 맞춤법 교정이 완료되면 실시간으로 우측 E열에 기록됩니다.
-        - **수정 사유 (F열 - 교정_수정사유):** 어떠한 오류 단어들이 왜 무엇으로 고쳐졌는지에 대한 사유가 F열에 일목요연하게 정리됩니다.
-        - **실시간 추적:** 아래 대시보드에서 실시간으로 성공 여부와 교정 전/후 데이터 및 사유 비교 표가 즉시 업데이트됩니다.
-        """)
-    st.markdown('<span class="badge-live">EASY MODE ACTIVE</span> 공유 링크나 파일 업로드만으로 100% 무설정 고속 맞춤법 검사를 수행합니다.', unsafe_allow_html=True)
 
-# ----------------- 검사 실행 및 실시간 모니터링 -----------------
-st.markdown("---")
-st.markdown("### 🚀 실시간 작업 대시보드")
+# 데이터 프리뷰 + 열 선택
+if df_loaded is not None:
+    with st.expander("📋 데이터 미리보기 (상위 5행)", expanded=True):
+        st.dataframe(df_loaded.head(5), use_container_width=True)
 
-if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
-    if data_source == "엑셀/CSV 파일 업로드" and uploaded_file is None:
-        st.error("⚠️ 검사할 엑셀 또는 CSV 파일을 업로드해주세요.")
-    elif data_source != "엑셀/CSV 파일 업로드" and (not sheet_url_input or sheet_url_input.strip() == ""):
-        st.error("⚠️ 올바른 구글 스프레드시트 URL을 입력해주세요.")
-    else:
-        # 데이터 로드 시작 알림
-        with st.spinner("데이터를 가져오는 중입니다..."):
-            if data_source == "엑셀/CSV 파일 업로드":
-                if uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file, dtype=str)
-                else:
-                    df = pd.read_excel(uploaded_file, dtype=str)
-                raw_data, mode, error_msg = get_raw_data_from_dataframe(df, sheet_name_input)
-            else:
-                raw_data, mode, error_msg = get_raw_data_from_public_url(sheet_url_input, sheet_name_input)
-            
-        if mode == 'error':
-            st.error(f"❌ 구글 시트 연동 오류가 발생했습니다!\n\n{error_msg}")
-            
-            # 사용자 해결 가이드 익스팬더 렌더링
-            with st.expander("🛠️ 공유 링크 연동 실패 해결 체크리스트", expanded=True):
-                st.markdown("""
-                구글 공유 링크를 읽어오지 못하는 경우 아래 항목을 체크해주세요:
-                
-                1. **공유 권한 설정 확인 (필수 🔓)**
-                   - 구글 스프레드시트 우측 상단의 **[공유]** 버튼을 누릅니다.
-                   - 일반 엑세스 권한을 '제한됨'에서 **'링크가 있는 모든 사용자'**로 변경하고, 역할을 **'뷰어'**로 설정했는지 확인하세요.
-                
-                2. **URL 형식 확인**
-                   - 브라우저 주소창에 표시되는 전체 주소(`https://docs.google.com/spreadsheets/d/...`)를 누락 없이 복사해 넣었는지 확인하세요.
-                """)
-        elif not raw_data:
-            st.warning("⚠️ 시트에서 처리할 데이터(A열)를 발견하지 못했습니다. 첫 번째 행은 헤더(제목)로 가정하고 제외되며, 실제 데이터는 2번째 행(A2)부터 있어야 합니다.")
+    text_col = st.selectbox(
+        "맞춤법을 검사할 열(컬럼) 선택",
+        options=list(df_loaded.columns),
+        index=0,
+        help="맞춤법 검사를 수행할 한글 텍스트(종합의견/특기사항 등)가 들어 있는 열을 선택하세요.",
+    )
+    st.session_state["df_original"] = df_loaded
+    st.session_state["text_column"] = text_col
+
+
+# ──────────────────────────────────────────────
+# 2단계: 맞춤법 검사 실행
+# ──────────────────────────────────────────────
+st.header("2️⃣ 맞춤법 검사 실행")
+
+can_run = st.session_state["df_original"] is not None
+
+run_btn = st.button(
+    "🚀 맞춤법 검사 시작",
+    disabled=not can_run,
+    use_container_width=True,
+    type="primary",
+)
+
+if run_btn and can_run:
+    df_src = st.session_state["df_original"].copy()
+    col = st.session_state["text_column"]
+
+    try:
+        records = get_raw_data_from_dataframe(df_src, col)
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
+
+    total = len(records)
+    if total == 0:
+        st.warning("검사할 텍스트가 없습니다. 선택한 열에 내용이 있는지 확인하세요.")
+        st.stop()
+
+    # 결과 열 추가
+    result_col = col + "_교정"
+    error_col = col + "_오류수"
+    reason_col = col + "_교정사유"
+    df_src[result_col] = ""
+    df_src[error_col] = 0
+    df_src[reason_col] = ""
+
+    progress_bar = st.progress(0, text="검사 준비 중...")
+    status_area = st.empty()
+    start_total = time.time()
+
+    # 실시간 모니터링 테이블용 
+    realtime_results = []
+    table_placeholder = st.empty()
+
+    for i, record in enumerate(records):
+        row_idx = record["row_index"]
+        original = record["original_text"]
+
+        status_area.info(
+            f"🔍 [{i + 1}/{total}] 맞춤법 스캔 중: \"{original[:45]}{'...' if len(original) > 45 else ''}\""
+        )
+
+        # 고성능 500자 자동 분할 맞춤법 검사 수행
+        result = check_spelling(original, delay=delay_sec, use_old_api=use_old_api)
+
+        # 교정 결과 및 오류 데이터 정리
+        df_src.at[row_idx, result_col] = result["corrected"]
+        df_src.at[row_idx, error_col] = len(result["errors"])
+        
+        # 교정 사유 문자열 취합
+        reasons_list = [f"[{err['original']} -> {err['corrected']}] {err['reason']}" for err in result["errors"]]
+        reasons_str = " | ".join(reasons_list) if reasons_list else "교정 사항 없음"
+        df_src.at[row_idx, reason_col] = reasons_str
+
+        # 실시간 프리뷰 표 업데이트
+        realtime_results.append({
+            "행 인덱스": row_idx + 1,
+            "원문 텍스트": original,
+            "교정 완료본": result["corrected"],
+            "총 오류 수": len(result["errors"]),
+            "상세 교정사유": reasons_str
+        })
+        
+        # 실시간 테이블 렌더링
+        table_placeholder.dataframe(pd.DataFrame(realtime_results), use_container_width=True, hide_index=True)
+
+        progress_bar.progress(
+            (i + 1) / total,
+            text=f"진행 중: {i + 1}/{total}행 완료",
+        )
+
+        # N줄마다 추가 휴식 (서버 보호 및 차단 완전 차단 장치)
+        if (i + 1) % chunk_delay_every == 0 and (i + 1) < total:
+            status_area.warning(f"⏸️ 서버 보호 장치: {chunk_delay_every}줄 처리 완료 - 3초간 안전 휴식 중...")
+            time.sleep(3)
         else:
-            # 필터링 처리
-            filtered_data = []
-            for item in raw_data:
-                # 덮어쓰기 제외 옵션이 켜져 있고 이미 B열에 교정본이 있는 경우 패스
-                if skip_existing and item.get("corrected", "").strip() != "":
-                    continue
-                filtered_data.append(item)
-                
-            total_items = len(filtered_data)
-            
-            if total_items == 0:
-                st.info("🎉 모든 행의 교정본이 이미 존재하여 검사할 항목이 없습니다. (덮어쓰기 제외 설정)")
-            else:
-                # 감지된 탭 형식에 맞춘 친절한 유저 알림 구성
-                detected_type = raw_data[0].get("detected_type", "행발_결과") if raw_data else "행발_결과"
-                type_korean = "📡 창체_결과 탭 모드 (E열 원문 ➡️ F열 교정본, G열 교정사유)" if detected_type == "창체_결과" else "📡 행동특성 및 종합의견 [행발_결과] 탭 모드 (D열 원문 ➡️ E열 교정본, F열 교정사유)"
-                
-                st.success(f"📊 총 {len(raw_data)}개 행 로드 성공! (이 중 처리 대상: {total_items}개 행)\n\n**🔍 시스템 자동 감지 탭:** `{type_korean}`")
-                
-                # 실시간 진행상황 레이아웃 구성
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                countdown_text = st.empty()
-                
-                # 실시간 메트릭 카드 세 개 나열
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                with col_m1:
-                    m_progress = st.empty()
-                with col_m2:
-                    m_success = st.empty()
-                with col_m3:
-                    m_engine = st.empty()
-                with col_m4:
-                    m_delay = st.empty()
+            jitter = random.uniform(0, 0.1)
+            time.sleep(delay_sec + jitter)
 
-                # 실시간 교정 비교 테이블을 렌더링하기 위한 동적 리스트
-                realtime_results = []
-                table_placeholder = st.empty()
-                
-                success_count = 0
-                server_engine_count = 0
-                error_engine_count = 0
-                
-                # 메트릭 초기화 렌더링
-                m_progress.metric("전체 진행률", "0%", "0 / 0 행")
-                m_success.metric("성공 개수", "0 행", "0.0%")
-                m_engine.metric("최근 교정 엔진", "대기 중", "0 / 0")
-                m_delay.metric("딜레이 대기", "대기 중", "0.0s")
+    elapsed = time.time() - start_total
+    status_area.success(
+        f"✅ 맞춤법 검사가 완전히 끝났습니다! 총 {total}행 처리 · 누적 소요시간 {elapsed:.1f}초"
+    )
+    progress_bar.progress(1.0, text="검사 완료!")
 
-                # 반복 작업을 통한 맞춤법 검사
-                for i, item in enumerate(filtered_data):
-                    current_idx = i + 1
-                    row_num = item["row"]
-                    original_text = item["original"]
-                    
-                    status_text.markdown(f"**🔍 처리 중 (행 번호: {row_num})**: *\"{original_text[:30]}...\"*")
-                    
-                    # 1. 맞춤법 검사 엔진 구동
-                    corrected_text, engine_type, reason_text = check_spelling(original_text)
-                    
-                    if engine_type == 'server':
-                        server_engine_count += 1
-                    else:
-                        error_engine_count += 1
-                        
-                    # 2. 결과 처리 성공 판정
-                    update_success = True
-                    
-                    if update_success:
-                        success_count += 1
-                        
-                    # 3. 실시간 결과 리스트 누적 및 표 시각화
-                    if sheet_name_input.strip() == "창체_결과":
-                        realtime_results.append({
-                            "행 번호": row_num,
-                            "번호 (A열)": item.get("id", ""),
-                            "성명 (B열)": item.get("name", ""),
-                            "학년 (C열)": item.get("grade", ""),
-                            "D열 (기타)": "",
-                            "원문 종합의견 (E열)": original_text,
-                            "교정 완료본 (F열)": corrected_text,
-                            "교정 사유 (G열)": reason_text.replace("\n", " | "),
-                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else ("❌ 서버 오류" if engine_type == "error" else "💻 로컬 사전 (Fallback)"),
-                            "업데이트": "✅ 완료" if update_success else f"❌ 실패 ({update_err})"
-                        })
-                    else:
-                        realtime_results.append({
-                            "행 번호": row_num,
-                            "번호 (A열)": item.get("id", ""),
-                            "성명 (B열)": item.get("name", ""),
-                            "학년 (C열)": item.get("grade", ""),
-                            "원문 종합의견 (D열)": original_text,
-                            "교정 완료본 (E열)": corrected_text,
-                            "교정 사유 (F열)": reason_text.replace("\n", " | "),
-                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else ("❌ 서버 오류" if engine_type == "error" else "💻 로컬 사전 (Fallback)"),
-                            "업데이트": "✅ 완료" if update_success else f"❌ 실패 ({update_err})"
-                        })
-                    
-                    # 실시간 DataFrame 테이블 업데이트
-                    df = pd.DataFrame(realtime_results)
-                    table_placeholder.dataframe(
-                        df, 
-                        width='stretch', 
-                        hide_index=True
-                    )
-                    
-                    # 4. 실시간 메트릭 & 프로그레스바 반영
-                    percent_val = int((current_idx / total_items) * 100)
-                    progress_bar.progress(percent_val)
-                    
-                    m_progress.metric("전체 진행률", f"{percent_val}%", f"{current_idx} / {total_items} 행")
-                    success_rate = (success_count / current_idx) * 100
-                    m_success.metric("성공 개수", f"{success_count} 행", f"성공률: {success_rate:.1f}%")
-                    m_engine.metric(
-                        "최근 교정 엔진", 
-                        "📡 서버 교정" if engine_type == 'server' else "❌ 서버 오류",
-                        f"성공: {server_engine_count} | 실패: {error_engine_count}"
-                    )
-                    
-                    # 5. 안전 지연 시간(Delay) 스케줄러 작동
-                    if current_idx < total_items:  # 마지막 행이 아닐 때만 대기
-                        # 10번째 행 여부 판단 (전체 인덱스 상 10번째마다)
-                        if current_idx % 10 == 0:
-                            sleep_time = random.uniform(delay_long_min, delay_long_max)
-                            m_delay.metric("딜레이 대기", f"{sleep_time:.1f}초 (장기)", "⚠️ 서버 차단 우회 중")
-                            
-                            # 1초 단위로 안전 휴식 카운트다운 타이머 시각적 구현
-                            for sec in range(int(sleep_time), 0, -1):
-                                countdown_text.markdown(
-                                    f'<div style="padding:10px; border-radius:8px; background-color:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#ef4444; font-weight:bold; margin-bottom:10px; text-align:center;">'
-                                    f'🚨 [서버 보호 안전 장치] {current_idx}번째 행 검사 완료 후 긴 휴식(우회 차단) 중... (남은 시간: {sec}초)'
-                                    f'</div>',
-                                    unsafe_allow_html=True
-                                )
-                                time.sleep(1.0)
-                            countdown_text.empty()
-                        else:
-                            # 일반 행 랜덤 딜레이
-                            sleep_time = random.uniform(delay_normal_min, delay_normal_max)
-                            m_delay.metric("딜레이 대기", f"{sleep_time:.1f}초 (일반)", "정상 지연 대기")
-                            time.sleep(sleep_time)
-                            
-                # 전체 루프 종료 후 성공 완료 메시지 출력
-                status_text.empty()
-                st.balloons()
-                st.success(f"🎉 맞춤법 검사 및 연동 자동화 작업이 완벽하게 완료되었습니다! (성공: {success_count}/{total_items} 행)")
-                
-                # 결과 엑셀 파일 다운로드 기능 제공
-                st.markdown("### 💾 결과 다운로드")
-                result_df = pd.DataFrame(realtime_results)
-                
-                # 컬럼명 정리
-                if sheet_name_input.strip() == "창체_결과":
-                    result_df = result_df.rename(columns={
-                        "번호 (A열)": "번호",
-                        "성명 (B열)": "성명",
-                        "학년 (C열)": "학년",
-                        "D열 (기타)": "비고",
-                        "원문 종합의견 (E열)": "행동특성 및 종합의견",
-                        "교정 완료본 (F열)": "교정_행동특성 및 종합의견",
-                        "교정 사유 (G열)": "교정_수정사유"
-                    })
-                else:
-                    result_df = result_df.rename(columns={
-                        "번호 (A열)": "번호",
-                        "성명 (B열)": "성명",
-                        "학년 (C열)": "학년",
-                        "원문 종합의견 (D열)": "행동특성 및 종합의견",
-                        "교정 완료본 (E열)": "교정_행동특성 및 종합의견",
-                        "교정 사유 (F열)": "교정_수정사유"
-                    })
-                # 불필요한 열 제거
-                result_df = result_df.drop(columns=["행 번호", "검증 엔진", "업데이트", "비고"], errors='ignore')
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    result_df.to_excel(writer, index=False, sheet_name="검사결과")
-                excel_data = output.getvalue()
-                
-                st.download_button(
-                    label="📥 교정 완료된 엑셀 파일 다운로드",
-                    data=excel_data,
-                    file_name="맞춤법검사결과.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    st.session_state["df_result"] = df_src
+    st.session_state["done"] = True
+
+
+# ──────────────────────────────────────────────
+# 3단계: 결과 확인 및 다운로드
+# ──────────────────────────────────────────────
+if st.session_state["done"] and st.session_state["df_result"] is not None:
+    st.header("3️⃣ 결과 확인 및 다운로드")
+
+    df_res = st.session_state["df_result"]
+    col = st.session_state["text_column"]
+    result_col = col + "_교정"
+    error_col = col + "_오류수"
+
+    # 요약 메트릭 계산
+    total_rows = len(df_res[df_res[col].notna() & (df_res[col].astype(str).str.strip() != "")])
+    error_rows = int((df_res[error_col] > 0).sum())
+    total_errors = int(df_res[error_col].sum())
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">📊 총 검사 행 수</div>
+            <div class="metric-value">{total_rows}행</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_m2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">⚠️ 오류 발견 행 수</div>
+            <div class="metric-value" style="color: #f43f5e;">{error_rows}행</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_m3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">✏️ 누적 검출 오류 수</div>
+            <div class="metric-value" style="color: #eab308;">{total_errors}개</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.write("")
+    
+    # 오류 있는 행 필터링 토글
+    show_errors_only = st.checkbox("⚠️ 맞춤법 오류가 발견된 행만 필터링해서 보기", value=False)
+    display_df = df_res if not show_errors_only else df_res[df_res[error_col] > 0]
+
+    st.dataframe(display_df, use_container_width=True, height=400)
+
+    # 다운로드 버튼 영역 (화려한 카드 형태 구현)
+    st.markdown("### 💾 완성 파일 내보내기")
+    dl_col1, dl_col2 = st.columns(2)
+
+    with dl_col1:
+        excel_bytes = df_to_excel_bytes(df_res)
+        st.download_button(
+            label="📥 엑셀 파일(.xlsx)로 내려받기",
+            data=excel_bytes,
+            file_name="생기부_맞춤법검사결과.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    with dl_col2:
+        csv_bytes = df_to_csv_bytes(df_res)
+        st.download_button(
+            label="📥 CSV 파일(.csv)로 내려받기",
+            data=csv_bytes,
+            file_name="생기부_맞춤법검사결과.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # 다시 검사하기 초기화
+    st.divider()
+    if st.button("🔄 새로운 문서 또는 시트로 처음부터 다시 시작", use_container_width=True):
+        for key in ["df_original", "df_result", "text_column", "processing", "done"]:
+            st.session_state[key] = None if key not in ("processing", "done") else False
+        st.rerun()
