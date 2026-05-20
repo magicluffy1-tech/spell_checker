@@ -101,18 +101,18 @@ st.markdown("""
 st.markdown("""
     <div class="title-container">
         <h1 class="title-text">✨ Premium 맞춤법 검사 & 구글 시트 연동기</h1>
-        <p class="subtitle-text">구글 시트의 원문 데이터를 로드하여 나라인포테크 맞춤법 검사기 서버(장애 시 5회 자동 재시도)를 통해 교정하고 결과를 즉각 실시간 업데이트합니다.</p>
+        <p class="subtitle-text">구글 시트의 원문 데이터를 로드하여 나라인포테크 맞춤법 검사기 서버(장애 시 3회 자동 재시도)를 통해 교정하고 결과를 즉각 실시간 업데이트합니다.</p>
     </div>
 """, unsafe_allow_html=True)
 
 # ----------------- 사이드바 (설정 영역) -----------------
 st.sidebar.markdown("## ⚙️ 시스템 설정 및 지연 시간")
-st.sidebar.caption("나라인포테크 서버의 IP 차단을 안전하게 회피하기 위한 지연 시간 제어 장치입니다.")
+st.sidebar.caption("나라인포테크 서버를 보호하고 안전한 우회를 유지하기 위한 미세 지연 시간 제어 장치입니다.")
 
-delay_normal_min = st.sidebar.slider("일반 행 최소 대기 (초)", 1.0, 5.0, 2.0, 0.5)
-delay_normal_max = st.sidebar.slider("일반 행 최대 대기 (초)", 1.5, 8.0, 3.5, 0.5)
-delay_long_min = st.sidebar.slider("10번째 행 최소 대기 (초)", 5.0, 15.0, 10.0, 1.0)
-delay_long_max = st.sidebar.slider("10번째 행 최대 대기 (초)", 10.0, 25.0, 13.0, 1.0)
+delay_normal_min = st.sidebar.slider("일반 행 최소 대기 (초)", 0.1, 2.0, 0.3, 0.1)
+delay_normal_max = st.sidebar.slider("일반 행 최대 대기 (초)", 0.2, 4.0, 0.8, 0.1)
+delay_long_min = st.sidebar.slider("10번째 행 최소 대기 (초)", 1.0, 10.0, 2.0, 0.5)
+delay_long_max = st.sidebar.slider("10번째 행 최대 대기 (초)", 1.5, 15.0, 4.0, 0.5)
 
 # ----------------- 메인 제어 및 입력 폼 -----------------
 col_input, col_info = st.columns([2, 1])

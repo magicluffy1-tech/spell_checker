@@ -1,9 +1,4 @@
 streamlit
 pandas
-selenium
-undetected-chromedriver
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-webdriver-manager
-gspread
+requests
+openpyxl
