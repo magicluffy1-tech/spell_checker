@@ -100,70 +100,90 @@ def get_sheet_tabs(url: str) -> list[dict]:
     # 구글 시트 HTML 페이지에서 시트 탭 정보 파싱
     html_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
     
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    content = ""
     try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
         resp = requests.get(html_url, headers=headers, timeout=15, verify=True)
         resp.raise_for_status()
+        resp.encoding = 'utf-8'  # 강제 UTF-8 설정으로 한글 깨짐 방지
         content = resp.text
-
-        tabs = []
-
-        # 방법 1: bootstrapData 또는 sheets 배열에서 gid + name 추출
-        # 구글 시트 HTML에는 JSON 형태로 시트 정보가 내장되어 있음
-        # 패턴: ["시트이름",null,null,null,null,null,null,null,null,숫자gid]
-        pattern1 = re.findall(
-            r'"([^"]+)",(?:null,){5,10}(\d{5,})',
-            content
-        )
-        if pattern1:
-            seen = set()
-            for name, gid in pattern1:
-                key = f"{name}:{gid}"
-                if key not in seen and len(name) < 50:
-                    seen.add(key)
-                    tabs.append({"name": html.unescape(name), "gid": gid})
-            if tabs:
-                return tabs
-
-        # 방법 2: data-id 속성과 aria-label 조합 (구버전 HTML 구조)
-        pattern2 = re.findall(
-            r'data-id="(\d+)"[^>]*aria-label="([^"]+)"',
-            content
-        )
-        if not pattern2:
-            pattern2 = re.findall(
-                r'aria-label="([^"]+)"[^>]*data-id="(\d+)"',
-                content
-            )
-            pattern2 = [(gid, name) for name, gid in pattern2]
-
-        if pattern2:
-            seen = set()
-            for gid, name in pattern2:
-                if gid not in seen:
-                    seen.add(gid)
-                    tabs.append({"name": html.unescape(name), "gid": gid})
-            if tabs:
-                return tabs
-
-        # 방법 3: gid=숫자 패턴만이라도 추출 (탭 이름 없이)
-        gids_found = re.findall(r'[#&?]gid=(\d+)', content)
-        seen_gids = set()
-        for gid in gids_found:
-            if gid not in seen_gids:
-                seen_gids.add(gid)
-                tabs.append({"name": f"시트 (gid={gid})", "gid": gid})
-        
-        return tabs
-
     except Exception:
-        return []
+        # SSL 인증서 문제 발생 시 verify=False로 2차 시도 (안정성 극대화)
+        try:
+            resp = requests.get(html_url, headers=headers, timeout=15, verify=False)
+            resp.raise_for_status()
+            resp.encoding = 'utf-8'
+            content = resp.text
+        except Exception:
+            return []
+
+    tabs = []
+    seen = set()
+
+    # 방법 1: modern serialized JSON sheets structure (최고 우선순위 & 유저 시트 무결 보장)
+    # 패턴: [index, 0, "gid", [{"1": [[0, 0, "sheet_name"
+    pattern0 = re.findall(
+        r'\[\d+,0,\\?"(\d+)\\?",\[\{\\?"1\\?":\[\[0,0,\\?"([^"\\]+)\\?"',
+        content
+    )
+    if pattern0:
+        for gid, name in pattern0:
+            if gid not in seen:
+                seen.add(gid)
+                clean_name = html.unescape(name.replace('\\\\', '\\').replace('\\"', '"'))
+                tabs.append({"name": clean_name, "gid": gid})
+        if tabs:
+            return tabs
+
+    # 방법 2: bootstrapData 또는 sheets 배열에서 gid + name 추출 (기존 fallback)
+    pattern1 = re.findall(
+        r'"([^"]+)",(?:null,){5,10}(\d{5,})',
+        content
+    )
+    if pattern1:
+        for name, gid in pattern1:
+            key = f"{name}:{gid}"
+            if key not in seen and len(name) < 50:
+                seen.add(key)
+                tabs.append({"name": html.unescape(name), "gid": gid})
+        if tabs:
+            return tabs
+
+    # 방법 3: data-id 속성과 aria-label 조합 (구버전 HTML 구조 fallback)
+    pattern2 = re.findall(
+        r'data-id="(\d+)"[^>]*aria-label="([^"]+)"',
+        content
+    )
+    if not pattern2:
+        pattern2 = re.findall(
+            r'aria-label="([^"]+)"[^>]*data-id="(\d+)"',
+            content
+        )
+        pattern2 = [(gid, name) for name, gid in pattern2]
+
+    if pattern2:
+        for gid, name in pattern2:
+            if gid not in seen:
+                seen.add(gid)
+                tabs.append({"name": html.unescape(name), "gid": gid})
+        if tabs:
+            return tabs
+
+    # 방법 4: gid=숫자 패턴만이라도 추출 (탭 이름 없이 최종 fallback)
+    gids_found = re.findall(r'[#&?]gid=(\d+)', content)
+    for gid in gids_found:
+        if gid not in seen:
+            seen.add(gid)
+            tabs.append({"name": f"시트 (gid={gid})", "gid": gid})
+    
+    return tabs
 
 
 def find_gid_by_sheet_name(url: str, sheet_name: str) -> Optional[str]:
@@ -249,20 +269,23 @@ def get_raw_data_from_public_url(
     Returns:
         (DataFrame 전체, records 리스트)
     """
-    # sheet_name이 주어졌고 gid가 없으면 이름으로 gid 탐색
+    sheet_id = _extract_sheet_id(url)
+    if not sheet_id:
+        raise ValueError("유효한 구글 시트 URL이 아닙니다. 공유 링크를 다시 확인하세요.")
+
+    csv_url = None
     if sheet_name and not gid:
         found_gid = find_gid_by_sheet_name(url, sheet_name)
         if found_gid is not None:
             gid = found_gid
+            csv_url = _gsheet_url_to_csv_url(url, gid=gid)
         else:
-            raise ValueError(
-                f"'{sheet_name}' 탭을 찾을 수 없습니다.\n"
-                "탭 이름이 정확한지 확인하거나, 시트 공유 설정을 점검하세요."
-            )
-
-    csv_url = _gsheet_url_to_csv_url(url, gid=gid)
+            # [기적의 폴백] HTML 파싱 실패로 gid를 찾지 못했더라도, 구글 공식 gviz API 쿼리 전송 시도!
+            # 이 방식은 HTML 파싱 없이도 탭 이름(sheet)을 직접 지정하여 CSV를 긁어옵니다.
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+            
     if not csv_url:
-        raise ValueError("유효한 구글 시트 URL이 아닙니다. 공유 링크를 다시 확인하세요.")
+        csv_url = _gsheet_url_to_csv_url(url, gid=gid)
 
     try:
         # Streamlit Cloud 등 프로덕션 환경의 안전한 리다이렉션 처리를 위해 verify=True를 기본으로 수행
