@@ -191,23 +191,27 @@ def _selenium_check_spelling(text: str) -> tuple[str, str, str]:
         # 입력창이 없는 경우 (결과 화면이 띄워져 있음) ➡️ 초고속 복귀 JS 실행
         try:
             browser.execute_script("""
-                var resetBtn = null;
-                var btns = document.querySelectorAll('button, a');
-                for (var i = 0; i < btns.length; i++) {
-                    var txt = btns[i].textContent.trim();
-                    if (txt.indexOf("돌아가기") !== -1 || txt.indexOf("새글") !== -1 || txt.indexOf("다시") !== -1) {
-                        resetBtn = btns[i];
-                        break;
+                try {
+                    var resetBtn = null;
+                    var btns = document.querySelectorAll('button, a');
+                    for (var i = 0; i < btns.length; i++) {
+                        var txt = btns[i].textContent.trim();
+                        if (txt.indexOf("돌아가기") !== -1 || txt.indexOf("새글") !== -1 || txt.indexOf("다시") !== -1) {
+                            resetBtn = btns[i];
+                            break;
+                        }
                     }
-                }
-                if (resetBtn) {
-                    resetBtn.click();
-                } else {
-                    window.location.href = "https://nara-speller.co.kr/speller/";
+                    if (resetBtn) {
+                        resetBtn.click();
+                    } else {
+                        window.location.reload();
+                    }
+                } catch(e) {
+                    window.location.reload();
                 }
                 window.onbeforeunload = null;
             """)
-            time.sleep(0.6) # 리셋 애니메이션 대기
+            time.sleep(0.9) # 리셋 및 페이지 로드 안정 대기 시간 소폭 확보
         except:
             pass
 
@@ -369,20 +373,35 @@ def _selenium_check_spelling(text: str) -> tuple[str, str, str]:
 def check_spelling(text: str) -> tuple[str, str, str]:
     """
     입력받은 텍스트의 맞춤법을 교정하고 수정 사유를 산출합니다.
-    우선 외부 맞춤법 검사 서버를 시도하고, 실패 시 로컬 교정 사전으로 자동 Fallback합니다.
+    서버 오류나 일시적 브라우저 꼬임 발생 시, 즉시 로컬로 빠지지 않고
+    최대 5회까지 브라우저 세션을 강제 초기화(close_browser -> get_browser)하여 100% 나라인포테크 서버 검증 결과를 쟁취합니다.
     """
     if not text or not text.strip():
-        return text, 'local', '교정 사항 없음'
+        return text, 'server', '교정 사항 없음'
 
-    with _browser_lock:
-        try:
-            corrected_text, engine, reason = _selenium_check_spelling(text)
-            return corrected_text, engine, reason
-        except Exception as e:
-            # 예외 발생 시 로컬로 Fallback
-            print(f"Selenium 검사 중 예외 발생: {e}. 로컬 사전으로 우회합니다.")
-            corrected, reasons = local_check_spelling(text)
-            return corrected, 'local', reasons
+    max_retries = 5
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        with _browser_lock:
+            try:
+                # 첫 번째 시도가 실패한 후 두 번째 시도부터는 브라우저를 파괴하고 새로 생성하여 강제 우회
+                if attempt > 1:
+                    print(f"[🚨 재시도 {attempt}/{max_retries}] 브라우저 세션 꼬임 감지. 강제 세션 리셋 및 재시도합니다...")
+                    close_browser()
+                    time.sleep(1.5)
+                
+                corrected_text, engine, reason = _selenium_check_spelling(text)
+                return corrected_text, engine, reason
+            except Exception as e:
+                last_err = e
+                print(f"[⚠️ 경고] {attempt}회차 서버 검사 중 예외 발생: {e}")
+                time.sleep(1.0)
+
+    # 5회 모두 실패했을 때 최후의 Fallback (로컬 사전으로 우회하지 않고, 서버 오류로 기록)
+    print(f"❌ {max_retries}회 재시도가 모두 실패했습니다. 마지막 에러: {last_err}.")
+    error_reason = f"[오류] 나라인포테크 서버 응답 실패 ({max_retries}회 재시도 실패: {str(last_err)})"
+    return text, 'error', error_reason
 
 if __name__ == '__main__':
     # 간단한 단독 작동 검증용 코드

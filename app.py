@@ -101,7 +101,7 @@ st.markdown("""
 st.markdown("""
     <div class="title-container">
         <h1 class="title-text">✨ Premium 맞춤법 검사 & 구글 시트 연동기</h1>
-        <p class="subtitle-text">구글 시트의 원문 데이터를 로드하여 나라인포테크 맞춤법 검사기 서버(통신 장애 시 로컬 사전으로 자동 전환)를 통해 교정하고 결과를 즉각 실시간 업데이트합니다.</p>
+        <p class="subtitle-text">구글 시트의 원문 데이터를 로드하여 나라인포테크 맞춤법 검사기 서버(장애 시 5회 자동 재시도)를 통해 교정하고 결과를 즉각 실시간 업데이트합니다.</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -249,7 +249,7 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                 
                 success_count = 0
                 server_engine_count = 0
-                local_engine_count = 0
+                error_engine_count = 0
                 
                 # 메트릭 초기화 렌더링
                 m_progress.metric("전체 진행률", "0%", "0 / 0 행")
@@ -271,7 +271,7 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                     if engine_type == 'server':
                         server_engine_count += 1
                     else:
-                        local_engine_count += 1
+                        error_engine_count += 1
                         
                     # 2. 결과 처리 성공 판정
                     update_success = True
@@ -290,7 +290,7 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                             "원문 종합의견 (E열)": original_text,
                             "교정 완료본 (F열)": corrected_text,
                             "교정 사유 (G열)": reason_text.replace("\n", " | "),
-                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else "💻 로컬 사전 (Fallback)",
+                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else ("❌ 서버 오류" if engine_type == "error" else "💻 로컬 사전 (Fallback)"),
                             "업데이트": "✅ 완료" if update_success else f"❌ 실패 ({update_err})"
                         })
                     else:
@@ -302,7 +302,7 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                             "원문 종합의견 (D열)": original_text,
                             "교정 완료본 (E열)": corrected_text,
                             "교정 사유 (F열)": reason_text.replace("\n", " | "),
-                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else "💻 로컬 사전 (Fallback)",
+                            "검증 엔진": "📡 나라인포테크 서버" if engine_type == "server" else ("❌ 서버 오류" if engine_type == "error" else "💻 로컬 사전 (Fallback)"),
                             "업데이트": "✅ 완료" if update_success else f"❌ 실패 ({update_err})"
                         })
                     
@@ -323,8 +323,8 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                     m_success.metric("성공 개수", f"{success_count} 행", f"성공률: {success_rate:.1f}%")
                     m_engine.metric(
                         "최근 교정 엔진", 
-                        "📡 서버 교정" if engine_type == 'server' else "💻 로컬 교정",
-                        f"서버: {server_engine_count} | 로컬: {local_engine_count}"
+                        "📡 서버 교정" if engine_type == 'server' else "❌ 서버 오류",
+                        f"성공: {server_engine_count} | 실패: {error_engine_count}"
                     )
                     
                     # 5. 안전 지연 시간(Delay) 스케줄러 작동
