@@ -3,7 +3,7 @@ import time
 import random
 import pandas as pd
 from spell_checker import check_spelling
-from sheets_handler import get_raw_data, update_result, get_gspread_client, get_raw_data_from_dataframe, get_raw_data_from_public_url
+from sheets_handler import get_raw_data_from_dataframe, get_raw_data_from_public_url
 import io
 
 # 스트림릿 페이지 설정 (Premium Theme 및 반응형 레이아웃)
@@ -106,32 +106,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 사이드바 (설정 영역) -----------------
-st.sidebar.markdown("## ⚙️ 시스템 설정 및 자격증명")
-
-# 구글 서비스 계정 인증 여부 확인
-g_client, auth_err = get_gspread_client()
-if g_client is not None:
-    st.sidebar.markdown(
-        '<div style="padding:10px; border-radius:8px; background-color:rgba(16,185,129,0.1); border:1px solid #10b981; color:#10b981; font-weight:bold; margin-bottom:15px; text-align:center;">'
-        '🟢 구글 서비스 계정 연동 완료 (LIVE)'
-        '</div>',
-        unsafe_allow_html=True
-    )
-    auth_status = "live"
-else:
-    st.sidebar.markdown(
-        '<div style="padding:10px; border-radius:8px; background-color:rgba(245,158,11,0.1); border:1px solid #f59e0b; color:#f59e0b; font-weight:bold; margin-bottom:15px; text-align:center;">'
-        '🟡 로컬 가상 데모 모드 (DEMO)'
-        '</div>',
-        unsafe_allow_html=True
-    )
-    auth_status = "demo"
-    st.sidebar.info(
-        "💡 `credentials.json` 파일이 맞춤법검사기 폴더에 없습니다. 구글 시트 URL 입력창에 임의로 입력하거나 'demo'로 테스트하면, 내장된 가상 데이터를 통해 모든 기능(프로그레스 바, 실시간 업데이트, 안전 딜레이)을 완벽하게 체험하실 수 있습니다."
-    )
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛡️ 서버 우회 & 안전 스케줄러 설정")
+st.sidebar.markdown("## ⚙️ 시스템 설정 및 지연 시간")
 st.sidebar.caption("나라인포테크 서버의 IP 차단을 안전하게 회피하기 위한 지연 시간 제어 장치입니다.")
 
 delay_normal_min = st.sidebar.slider("일반 행 최소 대기 (초)", 1.0, 5.0, 2.0, 0.5)
@@ -144,7 +119,7 @@ col_input, col_info = st.columns([2, 1])
 
 with col_input:
     st.markdown("### 📝 연동 데이터 입력")
-    data_source = st.radio("데이터 소스 선택", ["엑셀/CSV 파일 업로드", "구글 시트 (공유 링크 뷰어)", "구글 시트 (직접 연동 - 쓰기 권한 필요)"], horizontal=True)
+    data_source = st.radio("데이터 소스 선택", ["엑셀/CSV 파일 업로드", "구글 시트 (공유 링크 뷰어)"], horizontal=True)
     
     uploaded_file = None
     sheet_url_input = ""
@@ -153,10 +128,10 @@ with col_input:
         uploaded_file = st.file_uploader("검사할 파일을 업로드하세요 (.xlsx, .csv)", type=["xlsx", "csv"])
     else:
         sheet_url_input = st.text_input(
-            "구글 스프레드시트 URL",
-            value="demo" if auth_status == "demo" else "",
-            placeholder="https://docs.google.com/spreadsheets/d/.../edit",
-            help="구글 시트의 브라우저 주소창 URL을 복사해서 붙여넣으세요. 데모 모드일 때는 'demo'라고 입력하셔도 됩니다."
+            "구글 스프레드시트 공유 URL",
+            value="",
+            placeholder="https://docs.google.com/spreadsheets/d/.../edit?usp=sharing",
+            help="구글 시트의 우측 상단 [공유] -> [링크가 있는 모든 사용자]에게 '뷰어' 권한을 주신 후, 해당 주소를 복사해 붙여넣으세요. 데모 테스트 시 'demo'라고 입력하시면 가상 데이터를 보여줍니다."
         )
     
     col_sheet_name, col_options = st.columns(2)
@@ -192,10 +167,7 @@ with col_info:
         - **수정 사유 (F열 - 교정_수정사유):** 어떠한 오류 단어들이 왜 무엇으로 고쳐졌는지에 대한 사유가 F열에 일목요연하게 정리됩니다.
         - **실시간 추적:** 아래 대시보드에서 실시간으로 성공 여부와 교정 전/후 데이터 및 사유 비교 표가 즉시 업데이트됩니다.
         """)
-    if auth_status == "demo":
-        st.markdown('<span class="badge-demo">DEMO MODE ACTIVE</span> `credentials.json`을 준비하시면 실제 구글 드라이브 시트에 실시간 반영됩니다.', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge-live">LIVE MODE ACTIVE</span> 구글 클라우드 계정과 직접 연동되어 원격 구글 시트에 즉시 기록됩니다.', unsafe_allow_html=True)
+    st.markdown('<span class="badge-live">EASY MODE ACTIVE</span> 공유 링크나 파일 업로드만으로 100% 무설정 고속 맞춤법 검사를 수행합니다.', unsafe_allow_html=True)
 
 # ----------------- 검사 실행 및 실시간 모니터링 -----------------
 st.markdown("---")
@@ -215,29 +187,23 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                 else:
                     df = pd.read_excel(uploaded_file, dtype=str)
                 raw_data, mode, error_msg = get_raw_data_from_dataframe(df, sheet_name_input)
-            elif data_source == "구글 시트 (공유 링크 뷰어)":
-                raw_data, mode, error_msg = get_raw_data_from_public_url(sheet_url_input, sheet_name_input)
             else:
-                raw_data, mode, error_msg = get_raw_data(sheet_url_input, sheet_name_input)
+                raw_data, mode, error_msg = get_raw_data_from_public_url(sheet_url_input, sheet_name_input)
             
         if mode == 'error':
             st.error(f"❌ 구글 시트 연동 오류가 발생했습니다!\n\n{error_msg}")
             
             # 사용자 해결 가이드 익스팬더 렌더링
-            with st.expander("🛠️ 구글 시트 연동 실패 해결 체크리스트", expanded=True):
+            with st.expander("🛠️ 공유 링크 연동 실패 해결 체크리스트", expanded=True):
                 st.markdown("""
-                구글 시트 연동에 실패했을 경우 아래의 3가지 항목을 체크해주세요:
+                구글 공유 링크를 읽어오지 못하는 경우 아래 항목을 체크해주세요:
                 
-                1. **구글 시트 공유 권한 등록 (가장 빈번한 오류)**
-                   - 스프레드시트 우측 상단의 **[공유]** 버튼을 누르세요.
-                   - `credentials.json` 안에 정의된 서비스 계정 이메일(예: `your-service-account@your-project.iam.gserviceaccount.com`)을 추가하고 **편집자(Editor)** 권한을 부여했는지 확인하세요.
+                1. **공유 권한 설정 확인 (필수 🔓)**
+                   - 구글 스프레드시트 우측 상단의 **[공유]** 버튼을 누릅니다.
+                   - 일반 엑세스 권한을 '제한됨'에서 **'링크가 있는 모든 사용자'**로 변경하고, 역할을 **'뷰어'**로 설정했는지 확인하세요.
                 
-                2. **`credentials.json` 파일 존재 및 위치 확인**
-                   - 구글 클라우드 콘솔에서 다운로드한 JSON 키 파일명을 소문자로 정확히 `credentials.json`으로 변경하였는지 확인하세요.
-                   - 이 파일이 `c:\\Users\\user\\Desktop\\antigravity\\맞춤법검사기` 폴더에 있는지 확인하세요.
-                   
-                3. **구글 드라이브 및 스프레드시트 API 활성화**
-                   - 구글 클라우드 콘솔의 [API 및 서비스 > 라이브러리] 메뉴에서 **Google Sheets API**와 **Google Drive API**를 둘 다 찾아 **'사용(Enable)'** 설정으로 켰는지 확인하세요.
+                2. **URL 형식 확인**
+                   - 브라우저 주소창에 표시되는 전체 주소(`https://docs.google.com/spreadsheets/d/...`)를 누락 없이 복사해 넣었는지 확인하세요.
                 """)
         elif not raw_data:
             st.warning("⚠️ 시트에서 처리할 데이터(A열)를 발견하지 못했습니다. 첫 번째 행은 헤더(제목)로 가정하고 제외되며, 실제 데이터는 2번째 행(A2)부터 있어야 합니다.")
@@ -307,13 +273,8 @@ if st.button("✨ 맞춤법 검사 및 자동화 실행", type="primary"):
                     else:
                         local_engine_count += 1
                         
-                    # 2. 구글 시트 해당 행 업데이트 (직접 연동 시에만)
+                    # 2. 결과 처리 성공 판정
                     update_success = True
-                    update_err = None
-                    if data_source == "구글 시트 (직접 연동 - 쓰기 권한 필요)" and mode != "upload":
-                        update_success, update_err = update_result(sheet_url_input, row_num, corrected_text, reason_text, sheet_name_input)
-                    else:
-                        update_success = True
                     
                     if update_success:
                         success_count += 1
