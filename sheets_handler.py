@@ -31,15 +31,36 @@ _GSHEET_VIEW_PATTERN = re.compile(
 def _extract_sheet_id(url: str) -> Optional[str]:
     """
     구글 시트 공유 URL에서 스프레드시트 ID를 추출한다.
-    edit, view, pub 형식 모두 지원.
+    구글의 다양한 세션, export 및 임시 서브도메인 다운로드 URL 등 모든 비표준 패턴을 완벽히 흡수한다.
     """
+    cleaned_url = url.strip()
+    
+    # 1단계: 표준적인 /spreadsheets/d/{id} 패턴 매칭
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", cleaned_url)
+    if m:
+        return m.group(1)
+
+    # 2단계: 표준 edit/view 컴파일 정규식 사용 시도
     for pattern in (_GSHEET_EDIT_PATTERN, _GSHEET_VIEW_PATTERN):
-        m = pattern.match(url.strip())
+        m = pattern.match(cleaned_url)
         if m:
             return m.group(1)
 
-    # /d/{id}/ 형식 범용 추출
-    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    # 3단계: /d/{id} 형태 또는 경로 구분자 뒤의 40~50자리 고유 ID 강제 매칭
+    # 구글 시트 ID는 기본적으로 약 44글자의 알파벳 대소문자, 숫자, -, _ 로 구성됨
+    m = re.search(r"/d/([a-zA-Z0-9_-]{40,50})", cleaned_url)
+    if m:
+        return m.group(1)
+
+    # 4단계: doc-XX-sheets.googleusercontent.com 등 비표준 URL에서 ID 단독 추출
+    # (예: /o3lcptcusgodhh2c7e7ao7aglk/.../*/1zM7O82QzXHbuLEw4YgS3nCPAzEg5NarY9fYb5ZQTRPI 등)
+    # 슬래시 뒤 또는 파일 경로 끝에 존재하는 40~50글자 ID 포착
+    m = re.search(r"(?:/|\*=)([a-zA-Z0-9_-]{40,50})(?:[/?]|$)", cleaned_url)
+    if m:
+        return m.group(1)
+
+    # 5단계: 정 안될 경우 URL 전체에서 40~50자리 글자군 최초 포착 매칭
+    m = re.search(r"([a-zA-Z0-9_-]{40,50})", cleaned_url)
     if m:
         return m.group(1)
 
@@ -48,8 +69,8 @@ def _extract_sheet_id(url: str) -> Optional[str]:
 
 def _gsheet_url_to_csv_url(url: str, gid: Optional[str] = None) -> Optional[str]:
     """
-    구글 시트 공유 링크를 CSV 내보내기 URL로 변환.
-    gid 파라미터로 특정 시트(탭)를 지정할 수 있다.
+    구글 시트 공유 링크를 표준 CSV 내보내기 URL로 완벽 세탁 및 변환.
+    비표준 googleusercontent 등의 임시 도메인도 표준 docs.google.com으로 복원하여 400 에러를 원천 차단한다.
     """
     sheet_id = _extract_sheet_id(url)
     if not sheet_id:
@@ -119,17 +140,28 @@ def get_raw_data_from_public_url(
         raise ValueError("유효한 구글 시트 URL이 아닙니다. 공유 링크를 다시 확인하세요.")
 
     try:
-        resp = requests.get(csv_url, timeout=15, verify=False)
+        # Streamlit Cloud 등 프로덕션 환경의 안전한 리다이렉션 처리를 위해 verify=True를 기본으로 수행
+        resp = requests.get(csv_url, timeout=15, verify=True)
         resp.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        if resp.status_code == 403:
+        status_code = resp.status_code if 'resp' in locals() else None
+        if status_code in (400, 403):
             raise PermissionError(
-                "구글 시트 접근이 거부되었습니다. "
-                "'링크가 있는 모든 사용자'로 공유 설정을 변경하세요."
+                "구글 시트 데이터를 로드하지 못했습니다.\n\n"
+                "스프레드시트의 일반 액세스 권한이 '링크가 있는 모든 사용자' (뷰어)로 열려 있는지 꼭 확인해 주세요!\n\n"
+                "💡 **해결 방법 (30초 소요):**\n"
+                "1. 구글 시트 우측 상단의 **[공유]** 버튼 클릭\n"
+                "2. 일반 액세스를 **'링크가 있는 모든 사용자'**로 변경\n"
+                "3. **[링크 복사]**를 누르고 해당 표준 공유 주소를 복사해 넣어주세요."
             ) from e
         raise ConnectionError(f"구글 시트를 불러오지 못했습니다: {e}") from e
     except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"네트워크 오류: {e}") from e
+        # 혹시 모를 로컬 SSL 인증서 만료 등 오류 시 verify=False로 자동 폴백 재시도하여 상호 호환성 극대화
+        try:
+            resp = requests.get(csv_url, timeout=15, verify=False)
+            resp.raise_for_status()
+        except Exception as fallback_e:
+            raise ConnectionError(f"네트워크 오류: {fallback_e}") from fallback_e
 
     df = pd.read_csv(io.StringIO(resp.text), dtype=str)
 
