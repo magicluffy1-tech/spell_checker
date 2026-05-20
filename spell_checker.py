@@ -70,7 +70,6 @@ def local_check_spelling(text: str) -> tuple[str, str]:
     return corrected, reasons_text
 
 import sys
-import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -99,6 +98,7 @@ def get_browser():
     if sys.platform.startswith('win'):
         try:
             print("Windows 로컬 환경 감지: undetected-chromedriver를 초기화합니다...")
+            import undetected_chromedriver as uc
             options = uc.ChromeOptions()
             options.add_argument("--window-size=1200,800")
             _browser_instance = uc.Chrome(options=options)
