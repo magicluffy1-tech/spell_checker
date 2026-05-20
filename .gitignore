@@ -1,0 +1,31 @@
+# Google Credentials (보안 필수 격리)
+credentials.json
+token.json
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Streamlit Local Config / Secrets
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary & Results files
+*.log
+result.html
+speller_page.html
+dom_report.txt
+actual_result.html
+actual_dom_report.txt
+all_extracted_texts.txt
