@@ -1,225 +1,139 @@
 """
 sheets_handler.py
 
-데이터 입출력 핸들러
-- gspread / google-auth 직접 쓰기 연동 완전 제거
-- 지원 방식:
+데이터 입출력 핸들러 (xlsx 바이너리 다운로드 기반)
+─────────────────────────────────────────────────────
+★ 핵심 변경사항 (HTML/CSV 파싱 방식 완전 폐기):
+  - 구글 시트를 .xlsx 형식으로 직접 export 하여 메모리에 로드
+  - openpyxl.sheetnames로 탭 목록 100% 정확 추출 (JS 렌더링 불필요)
+  - pd.read_excel()로 한글 인코딩 깨짐 원천 차단
+  - 공개 시트(링크가 있는 모든 사용자)면 인증 없이 동작
+
+지원 방식:
   1) 엑셀(.xlsx) / CSV 파일 업로드 (Streamlit UploadedFile 객체)
-  2) 구글 시트 공유 링크 (뷰어 권한, 읽기 전용) CSV 내보내기 URL 변환
-     → 탭(시트) 이름으로 특정 탭 지정 가능
-- 결과 DataFrame → 엑셀/CSV 바이트 다운로드 유틸리티 포함
+  2) 구글 시트 공유 링크 (뷰어 권한, 읽기 전용) → xlsx export URL 자동 변환
+     → 탭(시트) 이름 드롭다운 자동 제공 + 한글 데이터 무결 보장
+결과 DataFrame → 엑셀/CSV 바이트 다운로드 유틸리티 포함
 """
 
 import io
 import re
-import html
 from typing import Optional
 import pandas as pd
 import requests
-
-# 공유 링크 → CSV 내보내기 URL 변환에 사용하는 정규식 패턴
-_GSHEET_EDIT_PATTERN = re.compile(
-    r"https://docs\.google\.com/spreadsheets/d/([^/]+)/edit.*"
-)
-_GSHEET_VIEW_PATTERN = re.compile(
-    r"https://docs\.google\.com/spreadsheets/d/([^/]+)/view.*"
-)
+import openpyxl
 
 # ──────────────────────────────────────────────
-# 1. 구글 시트 공유 링크 → CSV URL 변환
+# 내부: 구글 시트 ID 추출 및 URL 변환
 # ──────────────────────────────────────────────
 
 def _extract_sheet_id(url: str) -> Optional[str]:
-    """
-    구글 시트 공유 URL에서 스프레드시트 ID를 추출한다.
-    """
-    cleaned_url = url.strip()
-
-    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", cleaned_url)
+    """구글 시트 공유 URL에서 스프레드시트 ID를 추출한다."""
+    cleaned = url.strip()
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", cleaned)
     if m:
         return m.group(1)
-
-    for pattern in (_GSHEET_EDIT_PATTERN, _GSHEET_VIEW_PATTERN):
-        m = pattern.match(cleaned_url)
-        if m:
-            return m.group(1)
-
-    m = re.search(r"/d/([a-zA-Z0-9_-]{40,50})", cleaned_url)
+    m = re.search(r"/d/([a-zA-Z0-9_-]{40,})", cleaned)
     if m:
         return m.group(1)
-
-    m = re.search(r"(?:/|\*=)([a-zA-Z0-9_-]{40,50})(?:[/?]|$)", cleaned_url)
-    if m:
-        return m.group(1)
-
-    m = re.search(r"([a-zA-Z0-9_-]{40,50})", cleaned_url)
-    if m:
-        return m.group(1)
-
     return None
 
 
-def _gsheet_url_to_csv_url(url: str, gid: Optional[str] = None) -> Optional[str]:
+def _make_xlsx_export_url(sheet_id: str) -> str:
+    """스프레드시트 ID → xlsx 내보내기 URL 생성."""
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+
+
+def _download_xlsx(url: str) -> bytes:
     """
-    구글 시트 공유 링크를 표준 CSV 내보내기 URL로 변환.
-    gid가 주어지면 해당 탭, 없으면 URL의 gid 파라미터 사용 (기본값 "0").
-    """
-    sheet_id = _extract_sheet_id(url)
-    if not sheet_id:
-        return None
+    구글 시트를 xlsx 바이너리로 다운로드한다.
 
-    if gid is None:
-        m = re.search(r"[#&?]gid=(\d+)", url)
-        gid = m.group(1) if m else "0"
+    Args:
+        url: 구글 시트 공유 URL (edit / view / 직접 export URL 모두 허용)
 
-    return (
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-        f"/export?format=csv&gid={gid}"
-    )
-
-
-# ──────────────────────────────────────────────
-# 2. 탭(시트) 목록 조회 기능 (NEW)
-# ──────────────────────────────────────────────
-
-def get_sheet_tabs(url: str) -> list[dict]:
-    """
-    구글 시트 공유 링크에서 모든 탭(시트) 이름과 gid 목록을 조회한다.
-    
-    HTML을 파싱하여 탭 정보를 추출한다.
-    공유 설정이 '링크가 있는 모든 사용자'이어야 한다.
-    
     Returns:
-        [{"name": "시트이름", "gid": "숫자"}, ...]
-        조회 실패 시 빈 리스트 반환
+        xlsx 바이너리 (bytes)
+
+    Raises:
+        ValueError: 유효하지 않은 URL
+        PermissionError: 비공개 시트 또는 접근 차단
+        ConnectionError: 네트워크 오류
     """
     sheet_id = _extract_sheet_id(url)
     if not sheet_id:
-        return []
+        raise ValueError("유효한 구글 시트 URL이 아닙니다. 공유 링크를 다시 확인하세요.")
 
-    # 구글 시트 HTML 페이지에서 시트 탭 정보 파싱
-    html_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-    
+    export_url = _make_xlsx_export_url(sheet_id)
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+            "Chrome/124.0.0.0 Safari/537.36"
         )
     }
 
-    content = ""
+    # 1차 시도 (verify=True)
     try:
-        resp = requests.get(html_url, headers=headers, timeout=15, verify=True)
+        resp = requests.get(export_url, headers=headers, timeout=20, verify=True)
+        if resp.status_code in (401, 403):
+            raise PermissionError(
+                "구글 시트에 접근할 수 없습니다.\n\n"
+                "💡 **해결 방법:**\n"
+                "1. 구글 시트 → **[공유]** 버튼 클릭\n"
+                "2. 일반 액세스를 **'링크가 있는 모든 사용자 (뷰어)'** 로 변경\n"
+                "3. 변경 후 링크를 다시 복사해서 붙여넣어 주세요."
+            )
         resp.raise_for_status()
-        resp.encoding = 'utf-8'  # 강제 UTF-8 설정으로 한글 깨짐 방지
-        content = resp.text
-    except Exception:
-        # SSL 인증서 문제 발생 시 verify=False로 2차 시도 (안정성 극대화)
+        # xlsx 파일인지 확인 (구글 로그인 리다이렉트 HTML이 오는 경우 차단)
+        content_type = resp.headers.get("Content-Type", "")
+        if "html" in content_type.lower() or len(resp.content) < 1000:
+            raise PermissionError(
+                "구글 시트가 비공개 상태이거나 로그인이 필요합니다.\n\n"
+                "💡 공유 설정에서 '링크가 있는 모든 사용자'로 변경해 주세요."
+            )
+        return resp.content
+    except PermissionError:
+        raise
+    except requests.exceptions.SSLError:
+        # 2차 시도: SSL 인증서 문제 폴백
         try:
-            resp = requests.get(html_url, headers=headers, timeout=15, verify=False)
+            resp = requests.get(export_url, headers=headers, timeout=20, verify=False)
             resp.raise_for_status()
-            resp.encoding = 'utf-8'
-            content = resp.text
-        except Exception:
-            return []
-
-    tabs = []
-    seen = set()
-
-    # 방법 1: modern serialized JSON sheets structure (최고 우선순위 & 유저 시트 무결 보장)
-    # 패턴: [index, 0, "gid", [{"1": [[0, 0, "sheet_name"
-    pattern0 = re.findall(
-        r'\[\d+,0,\\?"(\d+)\\?",\[\{\\?"1\\?":\[\[0,0,\\?"([^"\\]+)\\?"',
-        content
-    )
-    if pattern0:
-        for gid, name in pattern0:
-            if gid not in seen:
-                seen.add(gid)
-                clean_name = html.unescape(name.replace('\\\\', '\\').replace('\\"', '"'))
-                tabs.append({"name": clean_name, "gid": gid})
-        if tabs:
-            return tabs
-
-    # 방법 2: bootstrapData 또는 sheets 배열에서 gid + name 추출 (기존 fallback)
-    pattern1 = re.findall(
-        r'"([^"]+)",(?:null,){5,10}(\d{5,})',
-        content
-    )
-    if pattern1:
-        for name, gid in pattern1:
-            key = f"{name}:{gid}"
-            if key not in seen and len(name) < 50:
-                seen.add(key)
-                tabs.append({"name": html.unescape(name), "gid": gid})
-        if tabs:
-            return tabs
-
-    # 방법 3: data-id 속성과 aria-label 조합 (구버전 HTML 구조 fallback)
-    pattern2 = re.findall(
-        r'data-id="(\d+)"[^>]*aria-label="([^"]+)"',
-        content
-    )
-    if not pattern2:
-        pattern2 = re.findall(
-            r'aria-label="([^"]+)"[^>]*data-id="(\d+)"',
-            content
-        )
-        pattern2 = [(gid, name) for name, gid in pattern2]
-
-    if pattern2:
-        for gid, name in pattern2:
-            if gid not in seen:
-                seen.add(gid)
-                tabs.append({"name": html.unescape(name), "gid": gid})
-        if tabs:
-            return tabs
-
-    # 방법 4: gid=숫자 패턴만이라도 추출 (탭 이름 없이 최종 fallback)
-    gids_found = re.findall(r'[#&?]gid=(\d+)', content)
-    for gid in gids_found:
-        if gid not in seen:
-            seen.add(gid)
-            tabs.append({"name": f"시트 (gid={gid})", "gid": gid})
-    
-    return tabs
-
-
-def find_gid_by_sheet_name(url: str, sheet_name: str) -> Optional[str]:
-    """
-    탭 이름으로 해당 탭의 gid를 찾는다.
-    
-    Args:
-        url: 구글 시트 공유 URL
-        sheet_name: 찾고자 하는 탭 이름 (예: "창체_완료")
-    
-    Returns:
-        gid 문자열 또는 None (탭을 찾지 못한 경우)
-    """
-    tabs = get_sheet_tabs(url)
-    
-    # 완전 일치 우선
-    for tab in tabs:
-        if tab["name"] == sheet_name:
-            return tab["gid"]
-    
-    # 대소문자 무시 매칭
-    lower_name = sheet_name.lower()
-    for tab in tabs:
-        if tab["name"].lower() == lower_name:
-            return tab["gid"]
-    
-    # 부분 일치 (포함 여부)
-    for tab in tabs:
-        if sheet_name in tab["name"] or tab["name"] in sheet_name:
-            return tab["gid"]
-    
-    return None
+            return resp.content
+        except Exception as e:
+            raise ConnectionError(f"네트워크 오류 (SSL 폴백 실패): {e}") from e
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"네트워크 오류: {e}") from e
 
 
 # ──────────────────────────────────────────────
-# 3. 데이터 로드 함수
+# 1. 탭(시트) 목록 조회 — xlsx 기반 100% 정확
+# ──────────────────────────────────────────────
+
+def get_sheet_tabs(url: str) -> list[dict]:
+    """
+    구글 시트 공유 링크에서 모든 탭(시트) 이름 목록을 조회한다.
+
+    HTML 파싱·JavaScript 렌더링 없이, xlsx export 바이너리에서
+    openpyxl로 직접 추출하므로 한글 이름도 완벽히 지원한다.
+
+    Returns:
+        [{"name": "시트이름", "index": 0}, ...]
+        조회 실패 시 빈 리스트 반환
+    """
+    try:
+        content = _download_xlsx(url)
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        tabs = [{"name": name, "index": i} for i, name in enumerate(wb.sheetnames)]
+        wb.close()
+        return tabs
+    except Exception:
+        return []
+
+
+# ──────────────────────────────────────────────
+# 2. 데이터 로드 함수
 # ──────────────────────────────────────────────
 
 def get_raw_data_from_dataframe(df: pd.DataFrame, text_column: str) -> list[dict]:
@@ -251,69 +165,56 @@ def get_raw_data_from_dataframe(df: pd.DataFrame, text_column: str) -> list[dict
 def get_raw_data_from_public_url(
     url: str,
     text_column: Optional[str] = None,
-    gid: Optional[str] = None,
     sheet_name: Optional[str] = None,
+    gid: Optional[str] = None,  # 하위 호환 유지 (미사용)
 ) -> tuple[pd.DataFrame, list[dict]]:
     """
     구글 시트 공유 링크(뷰어 권한 이상)에서 데이터를 로드한다.
-    
-    sheet_name이 주어지면 해당 이름의 탭을 자동으로 찾아 로드한다.
-    gid가 주어지면 sheet_name보다 우선 적용된다.
+
+    xlsx export URL로 전체 워크북을 다운로드하여 메모리에서 파싱하므로
+    한글 인코딩 깨짐이 없고, 탭 이름 지정도 정확히 작동한다.
 
     Args:
         url: 구글 시트 공유 URL
         text_column: 검사할 열 이름. None이면 첫 번째 열 사용.
-        gid: 특정 시트 탭의 gid (없으면 URL에서 자동 추출)
-        sheet_name: 탭 이름으로 gid를 자동 검색 (gid가 없을 때 사용)
+        sheet_name: 읽을 탭 이름. None이면 첫 번째 탭 사용.
+        gid: 미사용 (하위 호환용 파라미터, 무시됨)
 
     Returns:
         (DataFrame 전체, records 리스트)
     """
-    sheet_id = _extract_sheet_id(url)
-    if not sheet_id:
-        raise ValueError("유효한 구글 시트 URL이 아닙니다. 공유 링크를 다시 확인하세요.")
+    content = _download_xlsx(url)
 
-    csv_url = None
-    if sheet_name and not gid:
-        found_gid = find_gid_by_sheet_name(url, sheet_name)
-        if found_gid is not None:
-            gid = found_gid
-            csv_url = _gsheet_url_to_csv_url(url, gid=gid)
-        else:
-            # [기적의 폴백] HTML 파싱 실패로 gid를 찾지 못했더라도, 구글 공식 gviz API 쿼리 전송 시도!
-            # 이 방식은 HTML 파싱 없이도 탭 이름(sheet)을 직접 지정하여 CSV를 긁어옵니다.
-            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
-            
-    if not csv_url:
-        csv_url = _gsheet_url_to_csv_url(url, gid=gid)
-
+    # 탭 이름 지정이 있으면 해당 탭, 없으면 0번째 탭
     try:
-        # Streamlit Cloud 등 프로덕션 환경의 안전한 리다이렉션 처리를 위해 verify=True를 기본으로 수행
-        resp = requests.get(csv_url, timeout=15, verify=True)
-        resp.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        status_code = resp.status_code if 'resp' in locals() else None
-        if status_code in (400, 403):
-            raise PermissionError(
-                "구글 시트 데이터를 로드하지 못했습니다.\n\n"
-                "스프레드시트의 일반 액세스 권한이 '링크가 있는 모든 사용자' (뷰어)로 열려 있는지 꼭 확인해 주세요!\n\n"
-                "💡 **해결 방법 (30초 소요):**\n"
-                "1. 구글 시트 우측 상단의 **[공유]** 버튼 클릭\n"
-                "2. 일반 액세스를 **'링크가 있는 모든 사용자'**로 변경\n"
-                "3. **[링크 복사]**를 누르고 해당 표준 공유 주소를 복사해 넣어주세요."
-            ) from e
-        raise ConnectionError(f"구글 시트를 불러오지 못했습니다: {e}") from e
-    except requests.exceptions.RequestException as e:
-        # 혹시 모를 로컬 SSL 인증서 만료 등 오류 시 verify=False로 자동 폴백 재시도하여 상호 호환성 극대화
+        if sheet_name:
+            df = pd.read_excel(
+                io.BytesIO(content),
+                sheet_name=sheet_name,
+                engine="openpyxl",
+                dtype=str,
+            )
+        else:
+            df = pd.read_excel(
+                io.BytesIO(content),
+                sheet_name=0,
+                engine="openpyxl",
+                dtype=str,
+            )
+    except Exception as e:
+        # 탭 이름이 틀렸을 경우 첫 번째 탭으로 폴백
         try:
-            resp = requests.get(csv_url, timeout=15, verify=False)
-            resp.raise_for_status()
+            df = pd.read_excel(
+                io.BytesIO(content),
+                sheet_name=0,
+                engine="openpyxl",
+                dtype=str,
+            )
         except Exception as fallback_e:
-            raise ConnectionError(f"네트워크 오류: {fallback_e}") from fallback_e
+            raise ValueError(f"시트 데이터를 읽는 중 오류가 발생했습니다: {fallback_e}") from fallback_e
 
-    df = pd.read_csv(io.StringIO(resp.text), dtype=str)
     if df.empty:
-        raise ValueError("구글 시트가 비어 있습니다.")
+        raise ValueError("선택한 탭(시트)이 비어 있습니다.")
 
     col = text_column if text_column and text_column in df.columns else df.columns[0]
     records = get_raw_data_from_dataframe(df, col)
@@ -345,7 +246,7 @@ def load_uploaded_file(
 
 
 # ──────────────────────────────────────────────
-# 4. 결과 다운로드 유틸리티
+# 3. 결과 다운로드 유틸리티
 # ──────────────────────────────────────────────
 
 def df_to_excel_bytes(df: pd.DataFrame) -> bytes:

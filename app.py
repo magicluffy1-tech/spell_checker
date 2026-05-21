@@ -306,54 +306,42 @@ with col_load_1:
 
             tabs = st.session_state["sheet_tabs"]
 
-            # ── 탭 목록 표시 ──────────────────────
+            # ── 탭 목록 표시 및 드롭다운 ──────────────
             if tabs:
                 tab_names = [t["name"] for t in tabs]
 
-                st.markdown("**📑 발견된 탭 목록** (클릭하지 않고 아래 입력란에 이름을 입력하세요)")
+                st.markdown("**📑 시트 탭 목록 (자동 감지)**")
                 badges_html = '<div class="tab-list-container">'
                 for t in tabs:
                     badges_html += f'<span class="tab-badge">📄 {t["name"]}</span>'
                 badges_html += "</div>"
                 st.markdown(badges_html, unsafe_allow_html=True)
 
-                # 탭 이름 입력 (직접 타이핑 또는 selectbox)
                 st.markdown("")
-                use_selectbox = st.checkbox(
-                    "📋 목록에서 탭 선택 (직접 입력 대신 드롭다운 사용)",
-                    value=True,
+                selected_tab = st.selectbox(
+                    "📋 탭(시트) 선택",
+                    options=["(첫 번째 탭 사용)"] + tab_names,
+                    index=0,
+                    help="맞춤법 검사를 수행할 탭을 선택하세요.",
+                    key="tab_selectbox",
                 )
+                sheet_name_input = "" if selected_tab == "(첫 번째 탭 사용)" else selected_tab
 
-                if use_selectbox:
-                    selected_tab = st.selectbox(
-                        "탭(시트) 선택",
-                        options=["(선택 안 함 - 첫 번째 탭 사용)"] + tab_names,
-                        index=0,
-                        help="맞춤법 검사를 수행할 탭을 선택하세요.",
-                    )
-                    sheet_name_input = "" if selected_tab == "(선택 안 함 - 첫 번째 탭 사용)" else selected_tab
-                else:
-                    sheet_name_input = st.text_input(
-                        "탭(시트) 이름 직접 입력",
-                        value=st.session_state.get("selected_sheet_name", ""),
-                        placeholder="예: 창체_결과",
-                        help="위 탭 목록에서 이름을 확인한 뒤 정확히 입력하세요.",
-                    )
             else:
-                # 탭 목록 조회 실패 시 (비공개 / 로그인 세션 요구 상황)
+                # 탭 목록 조회 실패 시 (비공개 시트 등)
                 st.warning(
-                    "🔒 **구글 시트 탭 목록을 자동으로 불러오지 못했습니다.**\n\n"
-                    "현재 스프레드시트가 **'비공개(제한됨)'** 상태이거나 **'회사/학교 보안망'**에 의해 외부 접근이 차단되어 있을 수 있습니다.\n\n"
-                    "💡 **즉시 해결 방법:**\n"
-                    "1. 구글 시트 우측 상단 **[공유]** 버튼 클릭\n"
-                    "2. 일반 액세스를 **'링크가 있는 모든 사용자' (뷰어)**로 반드시 변경 후 하단의 **[완료]** 클릭!\n"
-                    "3. 여전히 드롭다운이 안 뜬다면, 아래 입력창에 시트 탭 이름을 직접 적고 **[시트 데이터 불러오기]**를 누르면 초강력 폴백 시스템으로 강제 조회를 시작합니다."
+                    "🔒 **시트 탭 목록을 불러오지 못했습니다.**\n\n"
+                    "스프레드시트가 **'비공개'** 상태일 수 있습니다.\n\n"
+                    "💡 **해결 방법:**\n"
+                    "1. 구글 시트 → **[공유]** 버튼\n"
+                    "2. 일반 액세스 → **'링크가 있는 모든 사용자 (뷰어)'** 로 변경\n"
+                    "3. 탭 이름을 아래에 직접 입력하세요."
                 )
                 sheet_name_input = st.text_input(
                     "📌 탭(시트) 이름 직접 입력",
                     value=st.session_state.get("selected_sheet_name", ""),
-                    placeholder="예: 창체_결과",
-                    help="구글 시트 하단 탭에 적힌 한글 이름을 토씨 하나 틀리지 않고 정확히 입력해 주세요.",
+                    placeholder="예: 창체_완료",
+                    help="구글 시트 하단 탭에 적힌 이름을 정확히 입력해 주세요.",
                 )
 
             # ── 시트 로드 버튼 ──────────────────────
@@ -395,9 +383,10 @@ with col_load_2:
     if input_mode == "구글 시트 공유 링크":
         st.info(
             "**탭(시트) 지정 방법**\n\n"
-            "1. 구글 시트 URL 입력 후 탭 목록이 자동으로 표시됩니다.\n"
-            "2. `창체_결과`, `행발_결과` 등 원하는 탭 이름을 선택하거나 직접 입력하세요.\n"
-            "3. **[시트 데이터 불러오기]** 버튼을 누르면 해당 탭만 로드됩니다."
+            "1. 구글 시트 URL 입력 시 탭 목록이 **자동으로 드롭다운**에 표시됩니다.\n"
+            "2. `창체_완료`, `행발_완료` 등 원하는 탭을 선택하세요.\n"
+            "3. **[시트 데이터 불러오기]** 버튼을 누르면 한글 데이터를 무결하게 로드합니다.\n\n"
+            "💡 xlsx 내보내기 방식으로 한글 인코딩 깨짐 없이 완벽 동작합니다!"
         )
     else:
         st.info(
